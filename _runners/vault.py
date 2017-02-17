@@ -11,6 +11,7 @@ Interact with Hashicorp Vault
 import logging
 import requests
 import base64
+import re
 
 import salt.crypt
 import salt.exceptions
@@ -71,9 +72,60 @@ def _get_policies(minion_id, config):
   #mappings = { 'minion': minion_id, 'grains': __grains__, 'pillar': minion_pillar }
   mappings = { 'minion': minion_id, 'grains': grains}
 
-  policies = []
-  for pattern in policyPatterns:
-    policies.append(pattern.format(**mappings))
+  policies = _expand_patterns(policyPatterns, mappings)
 
   log.debug('{0} policies: {1}'.format(minion_id, policies))
   return policies
+
+
+def _expand_patterns(patterns, mappings=None):
+  '''
+  Expand each pattern - format mapping data
+    For mappings that return a list expand the list
+    creating multiple patterns. This has only been
+    tested with a one dimensional list.
+
+  patterns:
+    list of patterns to expand
+    example:
+      [
+        'path/{minion}/{grains[ec2_tags][Environment]}',
+        'path/{minion}/{grains[ec2_tags][Environment]}/{grains[ec2_roles]}'
+      ]
+
+  mappings:
+    any variable to be expanded should be present in the mappings
+
+    example:
+      mappings = {
+        'minion': 'bacon',
+        'grains': {
+          'ec2_tags': {'Environment':'eggs'},
+          'ec2_roles': ['love','me', 'some']
+        }
+      }
+
+  '''
+  expanded_patterns = []
+  for pindex,pattern in enumerate(patterns):
+    try:
+      current_pattern = pattern.format(**mappings)
+    except:
+      log.debug('Unable to render {0}'.format(pattern))
+      continue
+    if "[" in current_pattern:
+      exploded_pattern = current_pattern.split('/')
+      for index,part in enumerate(exploded_pattern):
+        if '[' in part:
+          try:
+            # Don't eval here
+            # evaluated_expanded_parts = eval(part)
+            evaluated_expanded_parts = re.sub('[\'\[\]]','',part).split(',')
+            for eep in evaluated_expanded_parts:
+              exploded_pattern[index] = eep.strip()
+              expanded_patterns.append("/".join(exploded_pattern))
+          except Exception, e:
+            log.debug('Unable to render {0}'.format(evaluated_expanded_parts))
+    else:
+      expanded_patterns.append(current_pattern)
+  return expanded_patterns
